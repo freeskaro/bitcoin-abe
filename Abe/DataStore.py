@@ -36,7 +36,6 @@ import BCDataStream
 import deserialize
 import util
 import base58
-#import circulating
 
 SCHEMA_TYPE = "Abe"
 SCHEMA_VERSION = SCHEMA_TYPE + "40"
@@ -553,6 +552,7 @@ LEFT JOIN block prev ON (b.prev_block_id = prev.block_id)""",
     block_tx.tx_pos,
     tx.tx_id,
     tx.tx_hash,
+	tx.tx_human,
     tx.tx_lockTime,
     tx.tx_version,
     tx.tx_size,
@@ -563,6 +563,7 @@ LEFT JOIN block prev ON (b.prev_block_id = prev.block_id)""",
     txout.txout_scriptPubKey,
     pubkey.pubkey_id,
     pubkey.pubkey_hash,
+    pubkey.pubkey_human,
     pubkey.pubkey
   FROM chain_candidate cc
   JOIN block b ON (cc.block_id = b.block_id)
@@ -581,6 +582,7 @@ LEFT JOIN block prev ON (b.prev_block_id = prev.block_id)""",
     block_tx.tx_pos,
     tx.tx_id,
     tx.tx_hash,
+	tx.tx_human,
     tx.tx_lockTime,
     tx.tx_version,
     tx.tx_size,
@@ -596,6 +598,7 @@ LEFT JOIN block prev ON (b.prev_block_id = prev.block_id)""",
     prevout.txout_scriptPubKey txin_scriptPubKey,
     pubkey.pubkey_id,
     pubkey.pubkey_hash,
+    pubkey.pubkey_human,
     pubkey.pubkey
   FROM chain_candidate cc
   JOIN block b ON (cc.block_id = b.block_id)
@@ -733,6 +736,7 @@ store._ddl['configvar'],
 """CREATE TABLE tx (
     tx_id         NUMERIC(26) NOT NULL PRIMARY KEY,
     tx_hash       BINARY(32)  UNIQUE NOT NULL,
+	tx_human 	  VARCHAR(64) NULL,
     tx_version    NUMERIC(10),
     tx_lockTime   NUMERIC(10),
     tx_size       NUMERIC(10),
@@ -758,6 +762,7 @@ store._ddl['configvar'],
 """CREATE TABLE pubkey (
     pubkey_id     NUMERIC(26) NOT NULL PRIMARY KEY,
     pubkey_hash   BINARY(20)  UNIQUE NOT NULL,
+    pubkey_human   VARCHAR(34)  NULL,	
     pubkey        VARBINARY(""" + str(MAX_PUBKEY) + """) NULL
 )""",
 
@@ -1808,9 +1813,9 @@ store._ddl['txout_approx'],
             tx['size'] = len(tx['__data__'])
 
         store.sql("""
-            INSERT INTO tx (tx_id, tx_hash, tx_version, tx_lockTime, tx_size, tx_refheight)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-                  (tx_id, dbhash, store.intin(tx['version']),
+            INSERT INTO tx (tx_id, tx_hash, tx_human, tx_version, tx_lockTime, tx_size, tx_refheight)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                  (tx_id, dbhash, store.hashout_hex(dbhash), store.intin(tx['version']),
                    store.intin(tx['lockTime']), tx['size'],store.intin(tx['nRefHeight'])))
 
         # Import transaction outputs.
@@ -2087,14 +2092,16 @@ store._ddl['txout_approx'],
             store._export_scriptPubKey(ret, chain, scriptPubKey)
 
             return ret
-
+        # *POWER((1-1/POWER(2,20)),(SELECT b1.tx_refheight FROM txin_detail b1 where b1.tx_id = txin.tx_id) 
+        #           -(SELECT b1.tx_refheight FROM txout_detail b1 where b1.tx_id = txout.txout_id))
         # XXX Unneeded outer join.
         tx['in'] = map(parse_row, store.selectall("""
             SELECT
                 txin.txin_pos""" + (""",
                 txin.txin_scriptSig""" if store.keep_scriptsig else """,
-                NULL""") + """,
-                txout.txout_value,
+                NULL""") + """, 
+				txout.txout_value*POWER((1-1/POWER(2,20)),(SELECT DISTINCT b1.tx_refheight FROM txin_detail b1 where b1.tx_id = txin.tx_id) 
+                   - (tx_refheight)), 
                 COALESCE(prevtx.tx_hash, u.txout_tx_hash),
                 COALESCE(txout.txout_pos, u.txout_pos),
                 txout.txout_scriptPubKey
@@ -2523,7 +2530,7 @@ store._ddl['txout_approx'],
         return store._pubkey_id(pubkey_hash, None)
 
     def pubkey_to_id(store, chain, pubkey):
-        pubkey_hash = chain.pubkey_hash(pubkey)
+        pubkey_hash = chain.pubkey_hash(pubkey)        		
         return store._pubkey_id(pubkey_hash, pubkey)
 
     def _pubkey_id(store, pubkey_hash, pubkey):
@@ -2538,11 +2545,14 @@ store._ddl['txout_approx'],
 
         if pubkey is not None and len(pubkey) > MAX_PUBKEY:
             pubkey = None
-
+			
+        #print vers
+        addr = util.hash_to_address('\0', dbhash)		
+        #print addr		
         store.sql("""
-            INSERT INTO pubkey (pubkey_id, pubkey_hash, pubkey)
-            VALUES (?, ?, ?)""",
-                  (pubkey_id, dbhash, store.binin(pubkey)))
+            INSERT INTO pubkey (pubkey_id, pubkey_hash, pubkey_human, pubkey)
+            VALUES (?, ?, ?, ?)""",
+                  (pubkey_id, dbhash, addr, store.binin(pubkey)))
         return pubkey_id
 
     def flush(store):
@@ -3372,3 +3382,4 @@ store._ddl['txout_approx'],
 
 def new(args):
     return DataStore(args)
+	
